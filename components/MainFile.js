@@ -1,5 +1,5 @@
 // MainFile.js
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import {
   View,
   Text,
@@ -15,10 +15,7 @@ import {
   ActivityIndicator,
   TextInput,
 } from "react-native";
-import * as XLSX from "xlsx";
-import * as ImagePicker from "expo-image-picker";
 import * as FileSystem from "expo-file-system";
-import * as Sharing from "expo-sharing";
 import * as ImageManipulator from 'expo-image-manipulator';
 import BarcodeScanner from './BarcodeScanner'; 
 import AsyncStorage from '@react-native-async-storage/async-storage';  
@@ -28,6 +25,7 @@ import ImageScanner from "./ImageScanner";
 const MAX_SIZE_KB = 50;
 
 const MainFile = () => {
+  // Local data state for new entries
   const [data, setData] = useState([
     {
       barcode: '',
@@ -36,11 +34,14 @@ const MainFile = () => {
       images: '',
     }
   ]);
+  
+  // State to keep track of existing items count from the API
+  const [existingCount, setExistingCount] = useState(0);
+  
   const [folderName, setFolderName] = useState(null);
   const [isImageModalVisible, setIsImageModalVisible] = useState(false);
   const [selectedImageUri, setSelectedImageUri] = useState(null);
   const [loading, setLoading] = useState(false); 
-  const [hasMediaLibraryPermission, setHasMediaLibraryPermission] = useState(null);
   const [scanningIndex, setScanningIndex] = useState(null);
   const [isScanning, setIsScanning] = useState(false);
   const [isImage, setIsImage] = useState(false);
@@ -48,8 +49,62 @@ const MainFile = () => {
   const [currentEditingIndex, setCurrentEditingIndex] = useState(null);
   const [newBarcodeValue, setNewBarcodeValue] = useState("");
 
-  const cameraRef = useRef(null);
   const deviceWidth = Dimensions.get("window").width;
+
+  // Fetch folderName from AsyncStorage on component mount
+  useEffect(() => {
+    const getFolderName = async () => {
+      try {
+        const storedFolderName = await AsyncStorage.getItem('folderName');
+        if (storedFolderName) {
+          setFolderName(storedFolderName);
+        } else {
+          Alert.alert("Error", "Folder name not set.");
+        }
+      } catch (error) {
+        console.error("Error retrieving folder name:", error);
+        Alert.alert("Error", "Failed to retrieve folder name.");
+      }
+    };
+
+    getFolderName();
+  }, []);
+
+  // Fetch data from API when folderName changes
+  useEffect(() => {
+    if (folderName) {
+      fetchData();
+    }
+  }, [folderName]);
+
+  // Function to fetch data from the API and set existingCount
+  const fetchData = async () => {
+    setLoading(true);
+    try {
+      const response = await fetch(`https://b09f8zu7hj.execute-api.us-east-1.amazonaws.com/default/notfoundproductslist?folderName=${folderName}`);
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const fetchedData = await response.json();
+      console.log("Fetched Data:", fetchedData); // For debugging
+
+      // Ensure the API response has 'data' as an array
+      if (fetchedData && Array.isArray(fetchedData.data)) {
+        setExistingCount(fetchedData.data.length);
+        console.log(`Existing items count: ${fetchedData.data.length}`);
+      } else {
+        throw new Error("API response does not contain a 'data' array.");
+      }
+
+    } catch (error) {
+      console.error("Error fetching data:", error);
+      Alert.alert("Error", `Failed to fetch data: ${error.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handleScannedBarcode = (scannedData) => {
     if (scanningIndex !== null) {
@@ -105,6 +160,7 @@ const MainFile = () => {
     setIsScanning(false);
     setScanningIndex(null);
   };
+  
   const handleCloseImage = () => {
     setIsImage(false);
     setScanningIndex(null);
@@ -147,6 +203,7 @@ const MainFile = () => {
     setScanningIndex(index);
     setIsScanning(true);
   };
+  
   const handleStartImage = (index) => {
     setScanningIndex(index);
     setIsImage(true);
@@ -158,12 +215,10 @@ const MainFile = () => {
   };
 
   const handleUpdate = async (item, index) => {
-    const storedFolderName = await AsyncStorage.getItem('folderName');
-    if (!storedFolderName) {
+    if (!folderName) {
       Alert.alert("Error", "Folder name not set.");
       return;
     }
-    setFolderName(storedFolderName);
 
     try {
       let frontBase64Image = "";
@@ -178,12 +233,19 @@ const MainFile = () => {
         backBase64Image = backParts.length > 1 ? backParts[1] : backParts[0];
       }
 
-      console.log('Updating row:', index+1, 'barcode:', item.barcode, 'frontImage size:', frontBase64Image.length, 'backImage size:', backBase64Image.length);
+      // Handle indexing if barcode is empty
+      let barcodeToPost = item.barcode;
+      if (!barcodeToPost.trim()) {
+        // Assign an index-based barcode starting from existingCount + 1
+        barcodeToPost = `INDEX_${existingCount + index + 1}`; // Example: INDEX_1, INDEX_2, etc.
+      }
+
+      console.log('Updating row:', index+1, 'barcode:', barcodeToPost, 'frontImage size:', frontBase64Image.length, 'backImage size:', backBase64Image.length);
   
       const body = {
-        folderName: storedFolderName,
-        row: (index + 1).toString(),
-        barcode: item.barcode || "",
+        folderName: folderName,
+        row: (existingCount + index + 1).toString(), // Adjust row number based on existingCount
+        barcode: barcodeToPost,
         frontImage: frontBase64Image || "",
         backImage: backBase64Image || "",
       };
@@ -248,13 +310,40 @@ const MainFile = () => {
     handleUpdate(updatedData[currentEditingIndex], currentEditingIndex);
   };
 
-  const handleRefresh = () => {
-    // Reset data to a single empty row
-    setData([{
-      barcode: '',
-      frontImage: '',
-      backImage: '',
-    }]);
+  const handleRefresh = async () => {
+    Alert.alert(
+      "Confirm Refresh",
+      "Are you sure you want to refresh? This will clear current data and fetch the latest data from the server.",
+      [
+        {
+          text: "Cancel",
+          style: "cancel"
+        },
+        { 
+          text: "OK", 
+          onPress: async () => {
+            setLoading(true);
+            try {
+              // Clear current local data
+              setData([{
+                barcode: '',
+                frontImage: '',
+                backImage: '',
+                images: '',
+              }]);
+
+              // Re-fetch data from the API to reset existingCount
+              await fetchData();
+            } catch (error) {
+              console.error("Error during refresh:", error);
+              Alert.alert("Error", `Failed to refresh data: ${error.message}`);
+            } finally {
+              setLoading(false);
+            }
+          } 
+        }
+      ]
+    );
   };
 
   const apiHeaders = [
@@ -289,11 +378,11 @@ const MainFile = () => {
         }
       </View>
       <View style={styles.cell}>
-      <TouchableOpacity onPress={() => handleStartImage(index)}>
-            <Text style={styles.actionText}>Scan Image</Text>
-          </TouchableOpacity>
-          </View>
-          <View style={styles.cell}>
+        <TouchableOpacity onPress={() => handleStartImage(index)}>
+          <Text style={styles.actionText}>Scan Image</Text>
+        </TouchableOpacity>
+      </View>
+      <View style={styles.cell}>
         <TouchableOpacity onPress={() => handleUpdate(item, index)}>
           <Text style={styles.actionText}>Update</Text>
         </TouchableOpacity>
@@ -329,6 +418,7 @@ const MainFile = () => {
         />
       </ScrollView>
 
+      {/* Barcode Edit Modal */}
       <Modal
         visible={isBarcodeModalVisible}
         transparent={true}
@@ -363,6 +453,7 @@ const MainFile = () => {
         </View>
       </Modal>
 
+      {/* Barcode Scanner Modal */}
       <Modal visible={isScanning} animationType="slide">
         <BarcodeScanner 
           onBarcodeScanned={handleScannedBarcode} 
@@ -381,6 +472,7 @@ const MainFile = () => {
         </TouchableOpacity>
       </Modal>
 
+      {/* Image Scanner Modal */}
       <Modal visible={isImage} animationType="slide">
         <ImageScanner 
           onClose={handleCloseImage} 
@@ -394,15 +486,18 @@ const MainFile = () => {
             setScanningIndex(null);
           }}
         >
-          <Text style={styles.closeModalText}>Close Scanner</Text>
+          <Text style={styles.closeModalText}>Close Camera</Text>
         </TouchableOpacity>
       </Modal>
+
+      {/* Loading Indicator */}
       {loading && <ActivityIndicator style={styles.loadingIndicator} />}
 
+      {/* Refresh Button and Logout */}
       <Button title="Refresh" onPress={handleRefresh} disabled={loading} />
-        <LogoutButton/>
-   
+      <LogoutButton />
 
+      {/* Image Modal */}
       <Modal
         visible={isImageModalVisible}
         transparent={true}
@@ -455,7 +550,7 @@ const styles = StyleSheet.create({
     marginTop: 5,
   },
   buttonText: {
-    color: "#000",
+    color: "#fff",
     fontSize: 16,
   },
   modalBackground: {
@@ -533,6 +628,13 @@ const styles = StyleSheet.create({
     flex: 1,
     marginLeft: 5,
     alignItems: "center",
+  },
+  closeScannerButton: {
+    backgroundColor: "#ff6347",
+    padding: 10,
+    borderRadius: 5,
+    alignItems: "center",
+    margin: 10,
   },
 });
 
