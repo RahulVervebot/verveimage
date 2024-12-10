@@ -118,7 +118,7 @@ const MainFile = () => {
 
   const compressImage = async (uri) => {
     try {
-      let width = 800;
+      let width = 1600;
       let quality = 0.5;
       let resizedImage = null;
       const maxAttempts = 10;
@@ -198,7 +198,7 @@ const MainFile = () => {
       Alert.alert("Error", "Failed to compress scanned image.");
     }
   };
-
+  
   const handleStartScanning = (index) => {
     setScanningIndex(index);
     setIsScanning(true);
